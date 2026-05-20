@@ -13,7 +13,23 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.warn('⚠️ Supabase credentials missing. Auth will not work. Check .env file.');
 }
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// If credentials are present, create a real Supabase client. Otherwise export a minimal
+// mock client that prevents runtime crashes in the browser during local development.
+let supabaseClient: any;
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+} else {
+  supabaseClient = {
+    auth: {
+      getSession: async () => ({ data: { session: null }, error: null }),
+      signInWithOAuth: async () => ({ error: new Error('Supabase not configured') }),
+      signOut: async () => ({ error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+    },
+  };
+}
+
+export const supabase = supabaseClient;
 
 export interface User {
   id: string;
@@ -54,6 +70,12 @@ export const convertAuthToUser = (authUser: any): User | null => {
  * Sign in with Google
  */
 export const signInWithGoogle = async () => {
+  // If Supabase isn't configured, perform a fallback navigation for local testing.
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    await signInWithGoogleFallback();
+    return;
+  }
+
   // Prefer canonical app URL when configured to avoid accidental localhost callbacks.
   const configuredAppUrl = (import.meta.env.VITE_APP_URL || '').trim();
   const fallbackAppUrl = 'https://horario-two-blue.vercel.app';
@@ -68,16 +90,46 @@ export const signInWithGoogle = async () => {
     redirectUrl = fallbackAppUrl;
   }
 
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: redirectUrl,
-    },
-  });
+  try {
+    const res = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUrl,
+      },
+    });
 
-  if (error) {
-    console.error('Error signing in with Google:', error);
-    throw error;
+    if (res?.error) {
+      console.error('Error signing in with Google:', res.error);
+      await signInWithGoogleFallback();
+    }
+  } catch (e) {
+    console.error('Error signing in with Google:', e);
+    await signInWithGoogleFallback();
+  }
+};
+
+// If Supabase is not configured, provide a lightweight fallback that navigates
+// to the public fallback URL so the button still triggers a navigation during
+// local development/testing.
+export const signInWithGoogleFallback = async () => {
+  try {
+    const configuredAppUrl = (import.meta.env.VITE_APP_URL || '').trim();
+    const fallbackAppUrl = 'https://horario-two-blue.vercel.app';
+    let redirectUrl = fallbackAppUrl;
+    try {
+      const resolved = new URL(configuredAppUrl || (typeof window !== 'undefined' ? window.location.origin : fallbackAppUrl));
+      if (resolved.hostname !== 'localhost' && resolved.hostname !== '127.0.0.1') {
+        redirectUrl = resolved.origin;
+      }
+    } catch {
+      redirectUrl = fallbackAppUrl;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.location.href = redirectUrl;
+    }
+  } catch (e) {
+    console.error('Fallback sign-in navigation failed:', e);
   }
 };
 

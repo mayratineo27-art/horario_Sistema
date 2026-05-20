@@ -101,7 +101,7 @@ function loadConfigFromFile(): UserConfig {
       ...getDefaultConfig(),
       ...parsed,
       sentByDate: parsed.sentByDate || {},
-      schedule: parsed.schedule || [],
+      schedule: normalizeScheduleCourseDuplicates(parsed.schedule || []),
       subscription: parsed.subscription || null,
       timezone: parsed.timezone || 'America/Santo_Domingo',
     };
@@ -601,7 +601,7 @@ export async function loadConfig(userKey?: string): Promise<UserConfig> {
 
     return {
       timezone: data.timezone || 'America/Santo_Domingo',
-      schedule: data.schedule || [],
+      schedule: normalizeScheduleCourseDuplicates(data.schedule || []),
       subscription: data.subscription || null,
       sentByDate: data.sent_by_date || {},
       notificationHourStart: data.notification_hour_start ?? 7,
@@ -618,16 +618,17 @@ export async function loadConfig(userKey?: string): Promise<UserConfig> {
 
 export async function saveConfig(config: UserConfig, userKey?: string): Promise<void> {
   if (!USE_SUPABASE || !supabase) {
-    saveConfigToFile(config);
+    saveConfigToFile({ ...config, schedule: normalizeScheduleCourseDuplicates(config.schedule || []) });
     return;
   }
 
   try {
+    const normalizedSchedule = normalizeScheduleCourseDuplicates(config.schedule || []);
     const payload = userKey
       ? {
           user_key: userKey,
           timezone: config.timezone,
-          schedule: config.schedule,
+          schedule: normalizedSchedule,
           subscription: config.subscription,
           sent_by_date: config.sentByDate,
           notification_hour_start: config.notificationHourStart,
@@ -637,7 +638,7 @@ export async function saveConfig(config: UserConfig, userKey?: string): Promise<
       : {
           id: 1,
           timezone: config.timezone,
-          schedule: config.schedule,
+          schedule: normalizedSchedule,
           subscription: config.subscription,
           sent_by_date: config.sentByDate,
           notification_hour_start: config.notificationHourStart,
@@ -666,6 +667,56 @@ function getDefaultConfig(): UserConfig {
     notificationHourStart: 7,
     notificationHourEnd: 22,
   };
+}
+
+function getCourseCodeFromActivity(activity: any): string | null {
+  const courseId = typeof activity?.courseId === 'string' ? activity.courseId.trim() : '';
+  const name = typeof activity?.name === 'string' ? activity.name : '';
+  const codeMatch = name.match(/\bIS-\d+\b/);
+  const parenMatch = name.match(/\((IS-\d+)\)/);
+  const courseCode = courseId || (codeMatch ? codeMatch[0] : parenMatch ? parenMatch[1] : '');
+  return courseCode ? courseCode.toUpperCase() : null;
+}
+
+function isCourseLikeActivity(activity: any): boolean {
+  const name = typeof activity?.name === 'string' ? activity.name : '';
+  const category = typeof activity?.category === 'string' ? activity.category : '';
+  return !!getCourseCodeFromActivity(activity) && (
+    activity?.isCourseMarked === true
+    || activity?.isAcademic === true
+    || activity?.activityType === 'FIJA_PERMANENTE'
+    || activity?.activityType === 'FIJA_AJUSTABLE'
+    || /\bIS-\d+\b/.test(name)
+    || /\bLab\b/i.test(name)
+    || category === 'ACADEMIC'
+  );
+}
+
+function normalizeScheduleCourseDuplicates(schedule: DaySchedule[]): DaySchedule[] {
+  return (Array.isArray(schedule) ? schedule : []).map(day => {
+    const courseActivities = new Map<string, Activity>();
+    const otherActivities: Activity[] = [];
+
+    for (const activity of day.activities || []) {
+      if (!isCourseLikeActivity(activity)) {
+        otherActivities.push(activity);
+        continue;
+      }
+
+      const courseCode = getCourseCodeFromActivity(activity);
+      if (!courseCode) {
+        otherActivities.push(activity);
+        continue;
+      }
+
+      courseActivities.set(courseCode, activity);
+    }
+
+    return {
+      ...day,
+      activities: [...courseActivities.values(), ...otherActivities].sort((left, right) => left.startTime.localeCompare(right.startTime)),
+    };
+  });
 }
 
 export type PushSubscriptionPayload = {

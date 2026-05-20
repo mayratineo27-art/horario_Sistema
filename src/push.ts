@@ -30,7 +30,9 @@ async function getApiBaseUrl() {
 
   // 2. In development (localhost), use local backend
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    return 'http://localhost:8787';
+    // Backend dev server runs on port 10000 by default in this workspace
+    // keep hostname deterministic instead of relying on an unused port 8787
+    return 'http://localhost:10000';
   }
 
   // 3. Default to Render backend for production (Vercel, etc)

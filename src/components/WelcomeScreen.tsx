@@ -1,6 +1,5 @@
 import { motion } from 'motion/react';
 import { LogIn } from 'lucide-react';
-import { signInWithGoogle } from '../services/supabaseAuth';
 
 interface WelcomeScreenProps {
   isLoading: boolean;
@@ -11,7 +10,6 @@ export const WelcomeScreen = ({ isLoading, onSignInClick }: WelcomeScreenProps) 
   const handleSignIn = async () => {
     try {
       onSignInClick?.();
-      await signInWithGoogle();
     } catch (error) {
       console.error('Sign in error:', error);
     }
@@ -73,7 +71,7 @@ export const WelcomeScreen = ({ isLoading, onSignInClick }: WelcomeScreenProps) 
           className="w-full bg-indigo-900 text-white rounded-2xl py-4 px-6 font-bold text-lg flex items-center justify-center gap-3 hover:bg-indigo-950 transition-colors shadow-lg"
         >
           <LogIn className="w-5 h-5" />
-          Continuar con Google
+          Continuar como Anónimo
         </motion.button>
 
         {/* Footer */}

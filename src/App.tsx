@@ -102,6 +102,51 @@ type CourseTemplate = {
   blocks: Array<{ dayIndex: number; activity: Activity }>;
 };
 
+const extractCourseCodeValue = (name: string) => {
+  const codeMatch = name.match(/\bIS-\d+\b/);
+  if (codeMatch) return codeMatch[0];
+  const parenMatch = name.match(/\((IS-\d+)\)/);
+  return parenMatch ? parenMatch[1] : null;
+};
+
+const isCourseLikeActivity = (activity: Activity) => {
+  const courseCode = activity.courseId || extractCourseCodeValue(activity.name);
+  return !!courseCode && (
+    activity.isCourseMarked === true
+    || activity.isAcademic === true
+    || activity.activityType === ActivityType.FIJA_PERMANENTE
+    || activity.activityType === ActivityType.FIJA_AJUSTABLE
+    || /\bIS-\d+\b/.test(activity.name)
+    || /\bLab\b/i.test(activity.name)
+    || activity.category === Category.ACADEMIC
+  );
+};
+
+const normalizeScheduleCourseDuplicates = (scheduleInput: DaySchedule[]): DaySchedule[] => scheduleInput.map(day => {
+  const courseActivities = new Map<string, Activity>();
+  const otherActivities: Activity[] = [];
+
+  day.activities.forEach(activity => {
+    if (!isCourseLikeActivity(activity)) {
+      otherActivities.push(activity);
+      return;
+    }
+
+    const courseCode = (activity.courseId || extractCourseCodeValue(activity.name) || '').toUpperCase();
+    if (!courseCode) {
+      otherActivities.push(activity);
+      return;
+    }
+
+    courseActivities.set(courseCode, activity);
+  });
+
+  return {
+    ...day,
+    activities: [...courseActivities.values(), ...otherActivities].sort((left, right) => left.startTime.localeCompare(right.startTime)),
+  };
+});
+
 export default function App() {
   // --- STATE ---
   const [activeDayIndex, setActiveDayIndex] = useState(() => {
@@ -116,7 +161,8 @@ export default function App() {
       const saved = localStorage.getItem('mya_dynamics_schedule');
       const lastDate = localStorage.getItem('mya_dynamics_last_date');
       if (lastDate !== todayStr) return INITIAL_SCHEDULE;
-      return saved ? JSON.parse(saved) : INITIAL_SCHEDULE;
+      const parsed = saved ? JSON.parse(saved) : INITIAL_SCHEDULE;
+      return normalizeScheduleCourseDuplicates(parsed);
     } catch (e) {
       console.error('Error loading schedule', e);
       return INITIAL_SCHEDULE;
@@ -291,12 +337,7 @@ export default function App() {
 
   const isViewingToday = activeDayIndex === currentSystemDayIndex();
 
-  const extractCourseCode = (name: string) => {
-    const codeMatch = name.match(/\bIS-\d+\b/);
-    if (codeMatch) return codeMatch[0];
-    const parenMatch = name.match(/\((IS-\d+)\)/);
-    return parenMatch ? parenMatch[1] : null;
-  };
+  const extractCourseCode = (name: string) => extractCourseCodeValue(name);
 
   const stripCourseCode = (name: string) => name.replace(/\s*\(IS-\d+\)/, '').trim();
 
@@ -341,13 +382,13 @@ export default function App() {
 
   const restoreFixedCourses = () => {
     setSchedule(prev => {
-      const restored = prev.map((day, idx) => {
+      const restored = normalizeScheduleCourseDuplicates(prev.map((day, idx) => {
         const baseFixed = INITIAL_SCHEDULE[idx]?.activities.filter(activity => activity.isFixed || activity.esFijo) ?? [];
         const currentFixedMap = new Map(day.activities.filter(activity => activity.isFixed || activity.esFijo).map(activity => [activity.id, activity]));
         const currentCustom = day.activities.filter(activity => !(activity.isFixed || activity.esFijo));
         const mergedFixed = baseFixed.map(activity => currentFixedMap.get(activity.id) || activity);
         return { ...day, activities: [...mergedFixed, ...currentCustom].sort((a, b) => a.startTime.localeCompare(b.startTime)) };
-      });
+      }));
 
       localStorage.setItem('mya_dynamics_schedule', JSON.stringify(restored));
       return restored;
@@ -800,7 +841,7 @@ export default function App() {
               // Load user's schedule from Supabase and apply weekly exceptions
               const weekKey = `${new Date().getFullYear()}-${String(Math.floor((new Date().getTime() - new Date(new Date().getFullYear(), 0, 4).getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1).padStart(2, '0')}`;
               const scheduleWithExceptions = await applyWeeklyExceptionsToSchedule(session.user.id, userSchedule, weekKey);
-              setSchedule(scheduleWithExceptions);
+                setSchedule(normalizeScheduleCourseDuplicates(scheduleWithExceptions));
             }
           } catch (error) {
             console.error('Error loading user data:', error);
@@ -844,7 +885,7 @@ export default function App() {
                 // Load user's schedule from Supabase and apply weekly exceptions
                 const weekKey = `${new Date().getFullYear()}-${String(Math.floor((new Date().getTime() - new Date(new Date().getFullYear(), 0, 4).getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1).padStart(2, '0')}`;
                 const scheduleWithExceptions = await applyWeeklyExceptionsToSchedule(user.id, userSchedule, weekKey);
-                setSchedule(scheduleWithExceptions);
+                setSchedule(normalizeScheduleCourseDuplicates(scheduleWithExceptions));
               }
             } catch (error) {
               console.error('Error loading user data:', error);
@@ -1317,7 +1358,8 @@ export default function App() {
   };
 
   const guardarHorario = async (nuevoHorario: DaySchedule[]) => {
-    setSchedule(nuevoHorario);
+    const normalizedHorario = normalizeScheduleCourseDuplicates(nuevoHorario);
+    setSchedule(normalizedHorario);
 
     if (!currentUser?.id) return;
 
@@ -1325,7 +1367,7 @@ export default function App() {
       setScheduleSyncStatus('syncing');
       await saveUserScheduleToSupabase(
         currentUser.id,
-        nuevoHorario,
+        normalizedHorario,
         Intl.DateTimeFormat().resolvedOptions().timeZone
       );
 
@@ -1333,7 +1375,7 @@ export default function App() {
       try {
         await scheduleNewNotification({
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          schedule: nuevoHorario,
+          schedule: normalizedHorario,
           userId: currentUser.id,
         });
       } catch (err) {
@@ -1676,7 +1718,7 @@ export default function App() {
       const hasSyncError = results.some((result) => result.status === 'rejected');
 
       // Update local state even if Supabase is temporarily unavailable.
-      setSchedule(onboardedSchedule);
+      setSchedule(normalizeScheduleCourseDuplicates(onboardedSchedule));
       setShowOnboarding(false);
 
       if (hasSyncError) {
@@ -1695,7 +1737,7 @@ export default function App() {
       }
     } catch (error) {
       console.error('Error completing onboarding:', error);
-      setSchedule(onboardedSchedule);
+      setSchedule(normalizeScheduleCourseDuplicates(onboardedSchedule));
       setShowOnboarding(false);
       setNotification({
         title: '⚠️ Guardado local',
@@ -1710,7 +1752,19 @@ export default function App() {
   };
 
   if (!currentUser) {
-    return <WelcomeScreen isLoading={false} />;
+    const handleAnonymousAccess = () => {
+      // Set anonymous user directly without requiring authentication
+      const anonymousUser: SupabaseUser = {
+        id: 'anonymous_' + Date.now(),
+        email: 'anonymous@local',
+        name: 'Anónimo',
+        avatar_url: undefined,
+        created_at: new Date().toISOString(),
+      };
+      setCurrentUser(anonymousUser);
+    };
+    
+    return <WelcomeScreen isLoading={false} onSignInClick={handleAnonymousAccess} />;
   }
 
   if (showOnboarding) {
@@ -2348,13 +2402,15 @@ export default function App() {
         {/* Activity Editor Modal */}
         <AnimatePresence>
           {showEditor && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-slate-950/70 z-[110] flex items-center justify-center p-6"
-              onClick={requestCloseEditor}
-            >
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[110] flex items-center justify-center p-6"
+                // Add an explicit inline background color to avoid Tailwind class generation / purge edge-cases
+                style={{ backgroundColor: 'rgba(15,23,42,0.7)' }}
+                onClick={requestCloseEditor}
+              >
               <motion.div
                 initial={{ scale: 0.9, opacity: 0, y: 20 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
